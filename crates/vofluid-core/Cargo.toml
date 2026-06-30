@@ -1,0 +1,18 @@
+[package]
+name = "vofluid-core"
+version = "0.1.0"
+edition = "2024"
+
+[features]
+default = ["parallel"]
+single = []
+parallel = ["dep:rayon"]
+serialzation = ["dep:serde", "dep:ron"]
+all = ["single", "parallel", "serialzation"]
+
+[dependencies]
+glam = { workspace = true, features = ["serde"] }
+rand.workspace = true
+serde = { workspace = true, optional = true }
+ron = { workspace = true, optional = true }
+rayon = { workspace = true, optional = true }

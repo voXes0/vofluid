@@ -1,0 +1,32 @@
+[workspace]
+members = [
+    "crates/vofluid-app",
+    "crates/vofluid-core",
+    "crates/vofluid-gpu",
+    "crates/vofluid-render",
+    "crates/vofluid-bevy",
+]
+
+[workspace.dependencies]
+anyhow = "1.0"
+thiserror = '2.0'
+bytemuck = { version = "1.22", features = ["derive"] }
+glam = "0.33"
+log = "0.4"
+pollster = "0.4"
+rand = "0.10"
+rayon = "1.10"
+ron = "0.12"
+serde = { version = "1", features = ["derive"] }
+wgpu = "29.0"
+winit = "0.30"
+env_logger = "0.11"
+criterion = { version = "0.8", features = ["html_reports"] }
+notify = "8"
+
+# wasm
+console_error_panic_hook = "0.1"
+console_log = "1.0"
+wasm-bindgen = "0.2"
+wasm-bindgen-futures = "0.4"
+web-sys = { version = "0.3", features = ["Document", "Window", "Element"] }

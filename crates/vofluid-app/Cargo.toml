@@ -1,0 +1,26 @@
+[package]
+name = "vofluid-app"
+version = "0.1.0"
+edition = "2024"
+
+[dependencies]
+winit.workspace = true
+wgpu = { workspace = true }
+notify.workspace = true
+pollster.workspace = true
+anyhow.workspace = true
+env_logger = { workspace = true }
+log.workspace = true
+glam = { workspace = true }
+vofluid-render = { path = "../vofluid-render" }
+vofluid-core = { path = "../vofluid-core", features = ["all"] }
+
+[profile.release]
+opt-level = 3
+lto = "fat"
+codegen-units = 1
+panic = "abort"
+strip = true
+
+[profile.release.package."*"]
+opt-level = 3
