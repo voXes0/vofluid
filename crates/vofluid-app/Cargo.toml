@@ -12,6 +12,9 @@ anyhow.workspace = true
 env_logger = { workspace = true }
 log.workspace = true
 glam = { workspace = true }
+egui = { workspace = true }
+egui-wgpu = { workspace = true }
+egui-winit = { workspace = true }
 vofluid-render = { path = "../vofluid-render" }
 vofluid-core = { path = "../vofluid-core", features = ["all"] }
 

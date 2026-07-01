@@ -23,7 +23,13 @@ winit = "0.30"
 env_logger = "0.11"
 criterion = { version = "0.8", features = ["html_reports"] }
 notify = "8"
-
+egui = "0.35"
+egui-wgpu = "0.35"
+egui-winit = { version = "0.35", default-features = false, features = [
+    "clipboard",
+    "wayland",
+    "x11",
+] }
 # wasm
 console_error_panic_hook = "0.1"
 console_log = "1.0"

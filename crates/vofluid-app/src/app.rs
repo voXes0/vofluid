@@ -1,9 +1,6 @@
 use std::{sync::Arc, vec};
 
-use notify::{
-    Event, RecommendedWatcher, RecursiveMode, Watcher,
-    event::{CreateKind, DataChange, ModifyKind},
-};
+use notify::{Event, RecommendedWatcher, RecursiveMode, Watcher};
 use std::path::Path;
 use std::sync::mpsc;
 use vofluid_core::{config::SimConfig, sim::Simulation};
@@ -15,6 +12,9 @@ use winit::{
     keyboard::{KeyCode, PhysicalKey},
     window::Window,
 };
+
+#[cfg(not(target_arch = "wasm32"))]
+use crate::gui::{Gui, GuiState, draw_config_panel};
 
 #[cfg(target_arch = "wasm32")]
 use wasm_bindgen::prelude::*;
@@ -114,6 +114,10 @@ pub struct App {
     proxy: Option<event_loop::EventLoopProxy<(GpuState, ParticleRenderer)>>,
     gpu: Option<GpuState>,
     renderer: Option<ParticleRenderer>,
+    #[cfg(not(target_arch = "wasm32"))]
+    gui: Option<Gui>,
+    #[cfg(not(target_arch = "wasm32"))]
+    gui_state: GuiState,
     sim: Simulation,
     config_rx: mpsc::Receiver<notify::Result<Event>>,
     _watcher: RecommendedWatcher,
@@ -139,6 +143,10 @@ impl App {
             proxy,
             gpu: None,
             renderer: None,
+            #[cfg(not(target_arch = "wasm32"))]
+            gui: None,
+            #[cfg(not(target_arch = "wasm32"))]
+            gui_state: GuiState::new(),
             sim,
             config_rx,
             _watcher: watcher,
@@ -217,6 +225,22 @@ impl App {
             renderer.render(&mut pass);
         }
 
+        #[cfg(not(target_arch = "wasm32"))]
+        if let Some(gui) = &mut self.gui {
+            let sim = &mut self.sim;
+            let gui_state = &mut self.gui_state;
+            gui.render(
+                &gpu.device,
+                &gpu.queue,
+                &mut encoder,
+                &gpu.window,
+                &view,
+                gpu.config.width,
+                gpu.config.height,
+                |ctx| draw_config_panel(ctx, sim, gui_state),
+            );
+        }
+
         gpu.queue.submit(std::iter::once(encoder.finish()));
         output.present();
     }
@@ -282,8 +306,11 @@ impl ApplicationHandler<(GpuState, ParticleRenderer)> for App {
                 },
             );
 
+            let gui = Gui::new(&gpu.device, &gpu.window, gpu.config.format);
+
             self.gpu = Some(gpu);
             self.renderer = Some(renderer);
+            self.gui = Some(gui);
         }
 
         #[cfg(target_arch = "wasm32")]
@@ -341,6 +368,14 @@ impl ApplicationHandler<(GpuState, ParticleRenderer)> for App {
             return;
         }
 
+        #[cfg(not(target_arch = "wasm32"))]
+        let egui_consumed = match (&mut self.gui, &self.gpu) {
+            (Some(gui), Some(gpu)) => gui.handle_window_event(&gpu.window, &event),
+            _ => false,
+        };
+        #[cfg(target_arch = "wasm32")]
+        let egui_consumed = false;
+
         if let Ok(Ok(notify_event)) = self.config_rx.try_recv() {
             use notify::EventKind::*;
             if matches!(notify_event.kind, Modify(_) | Create(_),) {
@@ -392,7 +427,7 @@ impl ApplicationHandler<(GpuState, ParticleRenderer)> for App {
                         ..
                     },
                 ..
-            } => self.handle_key(event_loop, code, key_state.is_pressed()),
+            } if !egui_consumed => self.handle_key(event_loop, code, key_state.is_pressed()),
             _ => {}
         }
     }

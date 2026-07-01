@@ -13,11 +13,14 @@ pub struct UniformGrid {
     particle_cells: Vec<usize>, // Cached cells set every rebuild, for only allocating at grid build
 }
 
+const GRID_BOUNDS_PADDING: f32 = 1.5;
+
 impl UniformGrid {
     pub fn new(bounds: Vec2, cell_size: f32, particle_count: usize) -> Self {
         let origin = Vec2::new(-bounds[0], -bounds[1]);
-        let grid_width = (bounds.x * 2.0 / cell_size).ceil() as usize + 1;
-        let grid_height = (bounds.y * 2.0 / cell_size).ceil() as usize + 1;
+        let grid_bounds = bounds * GRID_BOUNDS_PADDING;
+        let grid_width = (grid_bounds.x * 2.0 / cell_size).ceil() as usize + 1;
+        let grid_height = (grid_bounds.y * 2.0 / cell_size).ceil() as usize + 1;
         let cell_count = grid_width * grid_height;
         Self {
             particle_cells: vec![0usize; particle_count],
@@ -74,7 +77,22 @@ impl UniformGrid {
         }
     }
 
-    pub fn resize(&mut self, new_particle_count: usize) {
+    pub fn resize_bounds(&mut self, bounds: Vec2) {
+        let origin = Vec2::new(-bounds[0], -bounds[1]);
+        let grid_bounds = bounds * GRID_BOUNDS_PADDING;
+        let grid_width = (grid_bounds.x * 2.0 / self.cell_size).ceil() as usize + 1;
+        let grid_height = (grid_bounds.y * 2.0 / self.cell_size).ceil() as usize + 1;
+        let cell_count = grid_width * grid_height;
+
+        self.origin = origin;
+        self.grid_width = grid_width;
+        self.grid_height = grid_height;
+        self.cell_count = cell_count;
+        self.cell_starts.resize(cell_count + 1, 0);
+        self.cursors.resize(cell_count, 0);
+    }
+
+    pub fn resize_particles(&mut self, new_particle_count: usize) {
         self.particle_index.resize(new_particle_count, 0);
         self.particle_cells.resize(new_particle_count, 0);
     }

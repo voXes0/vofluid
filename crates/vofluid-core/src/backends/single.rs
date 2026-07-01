@@ -17,10 +17,12 @@ impl SingleThread {
         }
     }
     pub fn step(&mut self, particles: &mut Particles, config: &SimConfig) {
+        let dt = config.dt / config.substeps as f32;
+
         for _ in 0..config.substeps {
-            particles.apply_uniform_acceleration(config.gravity, config.dt);
+            particles.apply_uniform_acceleration(config.gravity, dt);
             particles.save_prev_positions();
-            particles.integrate_positions(config.dt);
+            particles.integrate_positions(dt);
             self.grid.rebuild(&particles.positions);
             particles.begin_scatter_pass();
             double_density(
@@ -29,11 +31,19 @@ impl SingleThread {
                 &mut particles.densities,
                 config,
                 &self.grid,
+                dt,
             );
             particles.end_scatter_pass();
             clamp_boundary(&mut particles.positions, config);
-            particles.reconstruct_velocities(config.dt);
+            particles.reconstruct_velocities(dt);
         }
+    }
+
+    pub fn resize_grid_bounds(&mut self, new_bounds: Vec2) {
+        self.grid.resize_bounds(new_bounds);
+    }
+    pub fn resize_grid_particles(&mut self, new_particle_count: usize) {
+        self.grid.resize_particles(new_particle_count);
     }
 }
 
@@ -43,8 +53,8 @@ fn double_density(
     densities: &mut Densities,
     config: &SimConfig,
     grid: &UniformGrid,
+    dt: f32,
 ) {
-    let dt = config.dt;
     let dt_sq = dt * dt;
     let i_radius = config.interaction_radius;
     let i_radius_inv = 1.0 / i_radius;

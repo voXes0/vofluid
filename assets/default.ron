@@ -1,10 +1,10 @@
 (
     substeps: 1,
-    dt: 0.016,
+    dt: 0.02,
     particle_count: 300,
     rest_density: 10.,
-    stiffness: 6.0,
-    stiffness_near: 15.0,
+    stiffness: 5.,
+    stiffness_near: 12.5,
     interaction_radius: 50.0,
     gravity: (0.0, 9.81),
     yield_ratio_stretch: 0.,
