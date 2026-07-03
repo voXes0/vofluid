@@ -6,7 +6,7 @@ pub struct UniformGrid {
     cursors: Vec<u32>,
     pub grid_width: usize,
     pub grid_height: usize,
-    pub cell_size: f32,
+    pub cell_size: f32, // Should be intercation radius in most cases.
     cell_size_inv: f32,
     origin: Vec2,
     cell_count: usize,

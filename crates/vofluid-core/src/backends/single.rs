@@ -10,12 +10,13 @@ impl SingleThread {
     pub fn new(config: &SimConfig) -> Self {
         Self {
             grid: UniformGrid::new(
-                config.bounds * 1.5,
+                config.bounds,
                 config.interaction_radius,
                 config.particle_count,
             ),
         }
     }
+    // Conventions: p is the iteration particle, n is the neighbor particle of the iteration particle
     pub fn step(&mut self, particles: &mut Particles, config: &SimConfig) {
         let dt = config.dt / config.substeps as f32;
 
@@ -59,16 +60,17 @@ fn double_density(
     let i_radius = config.interaction_radius;
     let i_radius_inv = 1.0 / i_radius;
     let i_radius_sq = i_radius * i_radius;
+    let min_dist = i_radius * 1e-4;
 
     densities.reset();
 
-    for ((p_indice, pos), densities) in positions.iter().enumerate().zip(densities.iter_mut()) {
-        grid.query_neighbours(*pos, |n_indice| {
+    for ((p_indice, p_pos), p_densities) in positions.iter().enumerate().zip(densities.iter_mut()) {
+        grid.query_neighbours(*p_pos, |n_indice| {
             if n_indice == p_indice {
                 return;
             }
             let n_pos = positions[n_indice];
-            let offset = n_pos - pos;
+            let offset = n_pos - p_pos;
 
             let distance_sq = offset.length_squared();
             if distance_sq > i_radius_sq {
@@ -76,25 +78,32 @@ fn double_density(
             }
 
             let distance = distance_sq.sqrt();
-            let inf = 1.0 - distance * i_radius_inv; // influence of the particle on neighbor and vice versa, 0 at the edge of the radius and 1 at the center
+            let inf = 1.0 - distance * i_radius_inv;
             let inf_sq = inf * inf;
 
-            densities.x += inf_sq; // x is density
-            densities.y += inf_sq * inf; // y in near density
+            p_densities.x += inf_sq;
+            p_densities.y += inf_sq * inf;
         });
+    }
 
-        let pressure = config.stiffness * (densities.x - config.rest_density);
-        let pressure_near = config.stiffness_near * densities.y;
+    for (((p_indice, p_pos), p_densities), next_p_pos) in positions
+        .iter()
+        .enumerate()
+        .zip(densities.iter())
+        .zip(next_positions.iter_mut())
+    {
+        let pressure_p = config.stiffness * (p_densities.x - config.rest_density);
+        let pressure_near_p = config.stiffness_near * p_densities.y;
 
-        let mut displacement_p = Vec2::ZERO;
+        let mut disp_p = Vec2::ZERO;
 
-        grid.query_neighbours(*pos, |n_indice| {
+        grid.query_neighbours(*p_pos, |n_indice| {
             if n_indice == p_indice {
                 return;
             }
 
             let n_pos = positions[n_indice];
-            let offset = n_pos - pos;
+            let offset = n_pos - p_pos; // p -> n
 
             let distance_sq = offset.length_squared();
             if distance_sq > i_radius_sq {
@@ -102,20 +111,27 @@ fn double_density(
             }
 
             let distance = distance_sq.sqrt();
-            let dir = if distance > 0.0 {
+            let dir_p_to_n = if distance > min_dist {
                 offset / distance
             } else {
                 Vec2::ZERO
             };
             let inf = 1.0 - distance * i_radius_inv;
 
-            let displacement = dt_sq * (pressure * inf + pressure_near * inf * inf) * dir;
+            let n_densities = densities[n_indice];
+            let pressure_n = config.stiffness * (n_densities.x - config.rest_density);
+            let pressure_near_n = config.stiffness_near * n_densities.y;
 
-            next_positions[n_indice] += displacement;
-            displacement_p -= displacement;
+            let sum_pressure = pressure_p + pressure_n;
+            let sum_pressure_near = pressure_near_p + pressure_near_n;
+
+            let displacement =
+                dt_sq * (sum_pressure * inf + sum_pressure_near * inf * inf) * (-dir_p_to_n);
+
+            disp_p += displacement;
         });
 
-        next_positions[p_indice] += displacement_p;
+        *next_p_pos += disp_p;
     }
 }
 

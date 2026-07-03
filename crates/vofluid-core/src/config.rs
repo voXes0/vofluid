@@ -6,6 +6,7 @@ use glam::Vec2;
 #[cfg_attr(feature = "serialzation", derive(serde::Serialize, serde::Deserialize))]
 #[derive(Clone, Debug)]
 pub struct SimConfig {
+    pub debug: bool,
     pub substeps: u32,
     pub dt: f32,
     pub particle_count: usize,
@@ -24,6 +25,7 @@ pub struct SimConfig {
 impl Default for SimConfig {
     fn default() -> Self {
         Self {
+            debug: false,
             substeps: 1,
             dt: 1.0 / 60.0,
             particle_count: 1,

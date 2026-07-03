@@ -17,13 +17,3 @@ egui-wgpu = { workspace = true }
 egui-winit = { workspace = true }
 vofluid-render = { path = "../vofluid-render" }
 vofluid-core = { path = "../vofluid-core", features = ["all"] }
-
-[profile.release]
-opt-level = 3
-lto = "fat"
-codegen-units = 1
-panic = "abort"
-strip = true
-
-[profile.release.package."*"]
-opt-level = 3
