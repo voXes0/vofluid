@@ -161,6 +161,125 @@ impl GuiState {
     }
 }
 
+/// Draws a small always-on-top FPS/frame-time readout in the corner of the
+/// screen. Kept separate from `draw_config_panel` so it stays visible even
+/// if the config window is collapsed, moved, or closed.
+///
+/// The sim step is shown as a rolling min/max/avg graph rather than a single
+/// smoothed number: an EMA hides exactly the spikes/stutter you want to see
+/// when hunting a perf regression at high particle counts. `render_ms` (CPU
+/// encode/submit time) stays a single smoothed figure since it's normally
+/// steady and isn't what you're currently chasing.
+pub fn draw_fps_overlay(
+    ctx: &egui::Context,
+    total_fps: f32,
+    render_ms: f32,
+    sim_history_ms: &[f32],
+    sim_stats: Option<(f32, f32, f32)>,
+) {
+    egui::Area::new(egui::Id::new("fps_overlay"))
+        .anchor(egui::Align2::RIGHT_TOP, Vec2::new(-8.0, 8.0))
+        .interactable(false)
+        .show(ctx, |ui| {
+            egui::Frame::popup(ui.style())
+                .fill(egui::Color32::from_black_alpha(180))
+                .show(ui, |ui| {
+                    ui.set_width(220.0);
+                    ui.vertical(|ui| {
+                        ui.label(
+                            egui::RichText::new(format!("{total_fps:.0} FPS"))
+                                .color(egui::Color32::WHITE)
+                                .monospace()
+                                .strong(),
+                        );
+                        ui.label(
+                            egui::RichText::new(format!("render: {render_ms:.2} ms"))
+                                .color(egui::Color32::from_rgb(140, 200, 255))
+                                .monospace(),
+                        );
+
+                        ui.add_space(4.0);
+
+                        if let Some((min, max, avg)) = sim_stats {
+                            ui.label(
+                                egui::RichText::new(format!(
+                                    "sim  min {min:.2}  avg {avg:.2}  max {max:.2} ms"
+                                ))
+                                .color(egui::Color32::from_rgb(255, 200, 120))
+                                .monospace(),
+                            );
+                        } else {
+                            ui.label(
+                                egui::RichText::new("sim: warming up…")
+                                    .color(egui::Color32::from_rgb(255, 200, 120))
+                                    .monospace(),
+                            );
+                        }
+
+                        draw_sim_history_graph(ui, sim_history_ms, sim_stats);
+                    });
+                });
+        });
+}
+
+/// Paints a rolling sim-step-time graph via the raw painter (no plotting
+/// crate dependency). Y axis auto-scales to the current window's min/max
+/// each frame so spikes are always visible regardless of overall scale.
+fn draw_sim_history_graph(ui: &mut egui::Ui, history_ms: &[f32], stats: Option<(f32, f32, f32)>) {
+    let (response, painter) =
+        ui.allocate_painter(Vec2::new(ui.available_width(), 60.0), egui::Sense::hover());
+    let rect = response.rect;
+
+    painter.rect_filled(rect, 2.0, egui::Color32::from_black_alpha(60));
+
+    if history_ms.len() < 2 {
+        return;
+    }
+
+    let Some((min, max, avg)) = stats else {
+        return;
+    };
+
+    // Pad the range a bit so the line doesn't hug the top/bottom edge, and
+    // guard against a degenerate (flat) range.
+    let range = (max - min).max(0.001);
+    let padded_min = min - range * 0.1;
+    let padded_max = max + range * 0.1;
+    let padded_range = (padded_max - padded_min).max(0.001);
+
+    let to_y = |ms: f32| -> f32 {
+        let t = (ms - padded_min) / padded_range;
+        rect.bottom() - t.clamp(0.0, 1.0) * rect.height()
+    };
+
+    // Average line, drawn first so the samples/spikes sit on top of it.
+    let avg_y = to_y(avg);
+    painter.hline(
+        rect.x_range(),
+        avg_y,
+        egui::Stroke::new(
+            1.0,
+            egui::Color32::from_rgba_unmultiplied(255, 200, 120, 120),
+        ),
+    );
+
+    let n = history_ms.len();
+    let points: Vec<egui::Pos2> = history_ms
+        .iter()
+        .enumerate()
+        .map(|(i, &ms)| {
+            let t = i as f32 / (n - 1).max(1) as f32;
+            let x = rect.left() + t * rect.width();
+            egui::Pos2::new(x, to_y(ms))
+        })
+        .collect();
+
+    painter.add(egui::Shape::line(
+        points,
+        egui::Stroke::new(1.5, egui::Color32::from_rgb(255, 200, 120)),
+    ));
+}
+
 /// Draws the `SimConfig` tuning panel plus Reset/Pause/Start controls.
 ///
 /// Takes the `&mut Ui` handed to us by `Context::run_ui` (current egui API;
@@ -277,8 +396,8 @@ pub fn draw_config_panel(root_ui: &mut egui::Ui, sim: &mut Simulation, gui_state
 
             ui.label("gravity");
             ui.horizontal(|ui| {
-                ui.add(egui::Slider::new(&mut sim.config.gravity.x, -29.43..=29.43).prefix("x: "));
-                ui.add(egui::Slider::new(&mut sim.config.gravity.y, -29.43..=29.43).prefix("y: "));
+                ui.add(egui::Slider::new(&mut sim.config.gravity.x, -29.43..=2994.3).prefix("x: "));
+                ui.add(egui::Slider::new(&mut sim.config.gravity.y, -29.43..=2994.3).prefix("y: "));
             });
 
             ui.label("bounds");

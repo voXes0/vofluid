@@ -14,7 +14,7 @@ use winit::{
 };
 
 #[cfg(not(target_arch = "wasm32"))]
-use crate::gui::{Gui, GuiState, draw_config_panel};
+use crate::gui::{Gui, GuiState, draw_config_panel, draw_fps_overlay};
 
 #[cfg(target_arch = "wasm32")]
 use wasm_bindgen::prelude::*;
@@ -118,10 +118,133 @@ pub struct App {
     gui: Option<Gui>,
     #[cfg(not(target_arch = "wasm32"))]
     gui_state: GuiState,
+    #[cfg(not(target_arch = "wasm32"))]
+    frame_stats: FrameStats,
+    /// Wall-clock timestamp of the last `RedrawRequested`. Used only to
+    /// compute `elapsed_secs` to hand to `Simulation::advance` — the actual
+    /// fixed-timestep accumulator lives in `vofluid-core` since "how much
+    /// simulated time has passed" is a simulation concern, not a windowing
+    /// one. This field is just the platform-specific clock reading; wasm32
+    /// doesn't have `std::time::Instant` without an extra crate, so it
+    /// falls back to stepping once per frame there (see `RedrawRequested`).
+    #[cfg(not(target_arch = "wasm32"))]
+    last_tick: std::time::Instant,
     sim: Simulation,
     config_rx: mpsc::Receiver<notify::Result<Event>>,
     _watcher: RecommendedWatcher,
+    #[cfg(not(target_arch = "wasm32"))]
+    target_frame_time: std::time::Duration,
 }
+
+/// Exponential moving average of a duration, in seconds. Reusable for
+/// timing any per-frame phase (sim step, render, total wall time, ...)
+/// without jittering wildly from frame to frame.
+#[cfg(not(target_arch = "wasm32"))]
+#[derive(Default)]
+struct SmoothedTimer {
+    smoothed_secs: f32,
+}
+
+#[cfg(not(target_arch = "wasm32"))]
+impl SmoothedTimer {
+    const SMOOTHING: f32 = 0.1;
+
+    fn record(&mut self, dt: std::time::Duration) {
+        let dt = dt.as_secs_f32();
+        if self.smoothed_secs == 0.0 {
+            self.smoothed_secs = dt;
+        } else {
+            self.smoothed_secs += (dt - self.smoothed_secs) * Self::SMOOTHING;
+        }
+    }
+
+    fn ms(&self) -> f32 {
+        self.smoothed_secs * 1000.0
+    }
+
+    fn hz(&self) -> f32 {
+        if self.smoothed_secs > 0.0 {
+            1.0 / self.smoothed_secs
+        } else {
+            0.0
+        }
+    }
+}
+
+/// Per-frame timing breakdown: how long the sim step took vs. the render/
+/// paint work, plus overall wall-clock FPS. Tracked separately because at
+/// high particle counts the sim step is usually the bottleneck, not the
+/// GPU — a single blended FPS number can't tell you which one is slow.
+#[cfg(not(target_arch = "wasm32"))]
+struct FrameStats {
+    last_frame_start: std::time::Instant,
+    total: SmoothedTimer,
+    sim_step: SmoothedTimer,
+    render: SmoothedTimer,
+    /// Ring buffer of the last `SIM_HISTORY_LEN` raw (unsmoothed) sim-step
+    /// timings, in milliseconds. An EMA hides spikes/stutter, which is
+    /// exactly what you want to *see* when hunting for perf regressions —
+    /// so this keeps the raw per-frame samples for graphing instead.
+    sim_history: std::collections::VecDeque<f32>,
+}
+
+#[cfg(not(target_arch = "wasm32"))]
+const SIM_HISTORY_LEN: usize = 240;
+
+#[cfg(not(target_arch = "wasm32"))]
+impl FrameStats {
+    fn new() -> Self {
+        Self {
+            last_frame_start: std::time::Instant::now(),
+            total: SmoothedTimer::default(),
+            sim_step: SmoothedTimer::default(),
+            render: SmoothedTimer::default(),
+            sim_history: std::collections::VecDeque::with_capacity(SIM_HISTORY_LEN),
+        }
+    }
+
+    /// Call once at the very start of handling `RedrawRequested`. Measures
+    /// wall-clock time since the previous frame started (i.e. the real,
+    /// user-visible frame rate, independent of how that time was spent).
+    fn begin_frame(&mut self) {
+        let now = std::time::Instant::now();
+        self.total.record(now - self.last_frame_start);
+        self.last_frame_start = now;
+    }
+
+    fn record_sim_step(&mut self, dt: std::time::Duration) {
+        self.sim_step.record(dt);
+
+        let ms = dt.as_secs_f32() * 1000.0;
+        if self.sim_history.len() == SIM_HISTORY_LEN {
+            self.sim_history.pop_front();
+        }
+        self.sim_history.push_back(ms);
+    }
+
+    fn record_render(&mut self, dt: std::time::Duration) {
+        self.render.record(dt);
+    }
+
+    /// (min, max, avg) over the current history window, in ms. Returns
+    /// `None` if no samples have been recorded yet.
+    fn sim_history_stats(&self) -> Option<(f32, f32, f32)> {
+        if self.sim_history.is_empty() {
+            return None;
+        }
+        let min = self.sim_history.iter().copied().fold(f32::MAX, f32::min);
+        let max = self.sim_history.iter().copied().fold(f32::MIN, f32::max);
+        let avg = self.sim_history.iter().sum::<f32>() / self.sim_history.len() as f32;
+        Some((min, max, avg))
+    }
+}
+
+// NOTE: `record_render`'s input only covers CPU-side work — building the
+// render pass, egui tessellation, `queue.submit()` — not actual GPU
+// execution time. `wgpu::Surface::present` doesn't block on the GPU, so
+// this can't see e.g. driver-side stalls or actual shader cost. For a true
+// GPU-side breakdown you'd want `wgpu::QuerySet` timestamp queries (or just
+// keep using Tracy/PIX, since you've already got that profiling workflow).
 
 impl App {
     pub fn new(
@@ -147,9 +270,15 @@ impl App {
             gui: None,
             #[cfg(not(target_arch = "wasm32"))]
             gui_state: GuiState::new(),
+            #[cfg(not(target_arch = "wasm32"))]
+            frame_stats: FrameStats::new(),
+            #[cfg(not(target_arch = "wasm32"))]
+            last_tick: std::time::Instant::now(),
             sim,
             config_rx,
             _watcher: watcher,
+            #[cfg(not(target_arch = "wasm32"))]
+            target_frame_time: std::time::Duration::from_secs_f64(1.0 / 120.0),
         }
     }
 
@@ -162,8 +291,6 @@ impl App {
             Some(r) => r,
             None => return,
         };
-
-        gpu.window.request_redraw();
 
         if !gpu.is_surface_configured {
             return;
@@ -229,6 +356,12 @@ impl App {
         if let Some(gui) = &mut self.gui {
             let sim = &mut self.sim;
             let gui_state = &mut self.gui_state;
+            let render_ms = self.frame_stats.render.ms();
+            let total_fps = self.frame_stats.total.hz();
+            // Contiguous copy of the ring buffer for the graph. Cheap:
+            // capped at SIM_HISTORY_LEN (240) f32s, once per frame.
+            let sim_history: Vec<f32> = self.frame_stats.sim_history.iter().copied().collect();
+            let sim_stats = self.frame_stats.sim_history_stats();
             gui.render(
                 &gpu.device,
                 &gpu.queue,
@@ -237,7 +370,10 @@ impl App {
                 &view,
                 gpu.config.width,
                 gpu.config.height,
-                |ctx| draw_config_panel(ctx, sim, gui_state),
+                |ctx| {
+                    draw_fps_overlay(ctx, total_fps, render_ms, &sim_history, sim_stats);
+                    draw_config_panel(ctx, sim, gui_state);
+                },
             );
         }
 
@@ -293,8 +429,8 @@ impl ApplicationHandler<(GpuState, ParticleRenderer)> for App {
 
             let renderer = ParticleRenderer::new(
                 &gpu.device,
-                &self.sim.particles.positions.0,
-                &self.sim.particles.vels.0,
+                &self.sim.particles.positions,
+                &self.sim.particles.vels,
                 RendererConfig {
                     shader: None,
                     target_format: gpu.config.format,
@@ -407,17 +543,83 @@ impl ApplicationHandler<(GpuState, ParticleRenderer)> for App {
                 }
             }
             WindowEvent::RedrawRequested => {
+                // Frame cap: bail out early (skip sim + render entirely)
+                // until at least target_frame_time has passed since the
+                // previous frame. This is checked here, inside
+                // RedrawRequested, rather than via ControlFlow::WaitUntil
+                // in about_to_wait, because about_to_wait's call frequency
+                // is documented as unreliable — winit's own docs note high
+                // frequency event sources (e.g. mouse movement) can cause
+                // "lots of wake ups and also lots of corresponding
+                // AboutToWait events", and there's a known winit issue
+                // where ControlFlow::Wait/WaitUntil stops being honored
+                // entirely while the pointer is outside the window. This
+                // check doesn't rely on ControlFlow at all, so it's immune
+                // to both problems — the redraw request itself is still
+                // requested at the end of this arm, and if it comes in
+                // "too early" we simply do nothing and ask for another one.
+                #[cfg(not(target_arch = "wasm32"))]
+                {
+                    let since_last = std::time::Instant::now() - self.frame_stats.last_frame_start;
+                    if since_last < self.target_frame_time {
+                        if let Some(gpu) = &self.gpu {
+                            gpu.window.request_redraw();
+                        }
+                        return;
+                    }
+                }
+
+                #[cfg(not(target_arch = "wasm32"))]
+                self.frame_stats.begin_frame();
+
+                // Advance simulated time by however much wall-clock time
+                // actually passed, rather than calling `step()` once per
+                // render — see `Simulation::advance` docs for why: tying
+                // sim steps to render framerate makes the fluid visibly
+                // slow down whenever framerate drops (e.g. from a higher
+                // particle count), even though nothing about the physics
+                // changed. `advance` reports back what it did, so `App`
+                // never has to know about steps/accumulators to get timing
+                // data out of it.
+                #[cfg(not(target_arch = "wasm32"))]
+                {
+                    let now = std::time::Instant::now();
+                    let elapsed = (now - self.last_tick).as_secs_f32();
+                    self.last_tick = now;
+
+                    let report = self.sim.advance(elapsed);
+                    if let Some(avg_secs) = report.avg_step_time_secs() {
+                        self.frame_stats
+                            .record_sim_step(std::time::Duration::from_secs_f32(avg_secs));
+                    }
+                }
+                // wasm32 has no `std::time::Instant` without an extra crate
+                // (e.g. `web-time`), so it keeps the simpler one-step-per-
+                // frame behavior for now rather than a fixed-timestep
+                // accumulator. Native is the primary target this was fixed
+                // for; revisit if web parity matters later.
+                #[cfg(target_arch = "wasm32")]
                 self.sim.step();
+
+                #[cfg(not(target_arch = "wasm32"))]
+                let render_t0 = std::time::Instant::now();
 
                 // Upload latest particle positions then draw.
                 if let (Some(gpu), Some(renderer)) = (&self.gpu, &mut self.renderer) {
                     renderer.upload_positions(
                         &gpu.device,
                         &gpu.queue,
-                        &self.sim.particles.positions.0,
+                        &self.sim.particles.positions,
                     );
                 }
                 self.render_frame(event_loop);
+
+                #[cfg(not(target_arch = "wasm32"))]
+                self.frame_stats.record_render(render_t0.elapsed());
+
+                if let Some(gpu) = &self.gpu {
+                    gpu.window.request_redraw();
+                }
             }
             WindowEvent::KeyboardInput {
                 event:

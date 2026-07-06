@@ -38,6 +38,7 @@ console_log = "1.0"
 wasm-bindgen = "0.2"
 wasm-bindgen-futures = "0.4"
 web-sys = { version = "0.3", features = ["Document", "Window", "Element"] }
+tracy-client = "0.18.4"
 
 [profile.dev]
 opt-level = 3

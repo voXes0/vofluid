@@ -2,11 +2,33 @@ use glam::{Vec2, vec2};
 
 use crate::{backend::Backend, config::SimConfig, particle::Particles};
 
-/// Top-level simulation container.
 pub struct Simulation {
     pub particles: Particles,
     pub config: SimConfig,
     backend: Backend,
+    accumulator: f32,
+}
+
+const MAX_FRAME_TIME_SECS: f32 = 0.25;
+
+#[derive(Clone, Copy, Debug, Default)]
+pub struct AdvanceReport {
+    /// How many internal `step()` calls ran to catch simulated time up to
+    /// the requested `elapsed_secs`. Usually 0 or 1; can be >1 after a
+    /// slow frame, 0 on a frame faster than `config.dt`.
+    pub steps_run: u32,
+    /// Total wall-clock time spent inside `step()` across all steps this
+    /// call, in seconds. `0.0` if `steps_run` is `0`. Divide by `steps_run`
+    /// for an average per-step cost.
+    pub step_time_secs: f32,
+}
+
+impl AdvanceReport {
+    /// Average per-step wall-clock cost, in seconds. `None` if no steps ran
+    /// this call (nothing to average).
+    pub fn avg_step_time_secs(&self) -> Option<f32> {
+        (self.steps_run > 0).then(|| self.step_time_secs / self.steps_run as f32)
+    }
 }
 
 impl Simulation {
@@ -16,6 +38,7 @@ impl Simulation {
             particles,
             config,
             backend,
+            accumulator: 0.0,
         };
         sim.initialize_particles();
         sim
@@ -23,6 +46,31 @@ impl Simulation {
 
     pub fn step(&mut self) {
         self.backend.step(&mut self.particles, &self.config);
+    }
+
+    pub fn advance(&mut self, elapsed_secs: f32) -> AdvanceReport {
+        let dt = self.config.dt;
+        if dt <= 0.0 {
+            return AdvanceReport::default();
+        }
+
+        let elapsed_secs = elapsed_secs.clamp(0.0, MAX_FRAME_TIME_SECS);
+        self.accumulator += elapsed_secs;
+
+        let steps = (self.accumulator / dt).floor();
+        self.accumulator -= steps * dt;
+        let steps_run = steps as u32;
+
+        let start = std::time::Instant::now();
+        for _ in 0..steps_run {
+            self.step();
+        }
+        let step_time_secs = start.elapsed().as_secs_f32();
+
+        AdvanceReport {
+            steps_run,
+            step_time_secs,
+        }
     }
 
     pub fn set_backend(&mut self, backend: Backend) {

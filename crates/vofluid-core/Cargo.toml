@@ -9,6 +9,7 @@ single = []
 parallel = ["dep:rayon"]
 serialzation = ["dep:serde", "dep:ron"]
 all = ["single", "parallel", "serialzation"]
+profile = ["dep:tracy-client"]
 
 [dependencies]
 glam = { workspace = true, features = ["serde"] }
@@ -16,3 +17,4 @@ rand.workspace = true
 serde = { workspace = true, optional = true }
 ron = { workspace = true, optional = true }
 rayon = { workspace = true, optional = true }
+tracy-client = { workspace = true, optional = true }
