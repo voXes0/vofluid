@@ -1,16 +1,9 @@
-use std::ops::MulAssign;
-
 use egui::Vec2;
 use egui_wgpu::{RendererOptions, ScreenDescriptor};
 use vofluid_core::sim::Simulation;
 use winit::{event::WindowEvent, window::Window};
 
 /// Thin wrapper around the egui <-> winit <-> wgpu plumbing.
-///
-/// Owns everything needed to turn winit events into egui input, run the UI
-/// closure, and paint the result on top of the particle render pass. None of
-/// this touches `Simulation` directly except through `Gui::ui`, which is
-/// where the actual `SimConfig` panel lives.
 pub struct Gui {
     state: egui_winit::State,
     renderer: egui_wgpu::Renderer,
@@ -48,13 +41,6 @@ impl Gui {
         self.state.on_window_event(window, event).consumed
     }
 
-    /// Runs the UI closure, tessellates the result, uploads buffers/textures,
-    /// and paints onto `pass`. `pass` is expected to already be mid-render
-    /// (cleared, with the particle draw already issued) — egui paints on top.
-    ///
-    /// `run_ui` receives a `&mut Ui` covering the whole content area (current
-    /// egui API — `Context::run` was removed in favor of `Context::run_ui`).
-    /// Build your own `egui::Window`/panels off of `ui.ctx()` inside it.
     #[allow(clippy::too_many_arguments)]
     pub fn render(
         &mut self,
@@ -83,9 +69,11 @@ impl Gui {
             pixels_per_point,
         };
 
-        for (id, image_delta) in &full_output.textures_delta.set {
-            self.renderer
-                .update_texture(device, queue, *id, image_delta);
+        for (id, image_deltas) in &full_output.textures_delta.set {
+            for image_delta in image_deltas {
+                self.renderer
+                    .update_texture(device, queue, *id, image_delta);
+            }
         }
 
         self.renderer
@@ -152,6 +140,7 @@ impl GuiState {
         }
     }
 
+    #[allow(dead_code)]
     pub fn toggle(&mut self, sim: &mut Simulation) {
         if self.is_paused() {
             self.start(sim);
@@ -161,15 +150,7 @@ impl GuiState {
     }
 }
 
-/// Draws a small always-on-top FPS/frame-time readout in the corner of the
-/// screen. Kept separate from `draw_config_panel` so it stays visible even
-/// if the config window is collapsed, moved, or closed.
-///
-/// The sim step is shown as a rolling min/max/avg graph rather than a single
-/// smoothed number: an EMA hides exactly the spikes/stutter you want to see
-/// when hunting a perf regression at high particle counts. `render_ms` (CPU
-/// encode/submit time) stays a single smoothed figure since it's normally
-/// steady and isn't what you're currently chasing.
+/// Draws a small frame-time readout
 pub fn draw_fps_overlay(
     ctx: &egui::Context,
     total_fps: f32,
@@ -177,7 +158,7 @@ pub fn draw_fps_overlay(
     sim_history_ms: &[f32],
     sim_stats: Option<(f32, f32, f32)>,
 ) {
-    egui::Area::new(egui::Id::new("fps_overlay"))
+    egui::Area::new(egui::Id::unique("fps_overlay"))
         .anchor(egui::Align2::RIGHT_TOP, Vec2::new(-8.0, 8.0))
         .interactable(false)
         .show(ctx, |ui| {
@@ -222,9 +203,7 @@ pub fn draw_fps_overlay(
         });
 }
 
-/// Paints a rolling sim-step-time graph via the raw painter (no plotting
-/// crate dependency). Y axis auto-scales to the current window's min/max
-/// each frame so spikes are always visible regardless of overall scale.
+/// Paints a rolling sim-step-time graph via the raw painter
 fn draw_sim_history_graph(ui: &mut egui::Ui, history_ms: &[f32], stats: Option<(f32, f32, f32)>) {
     let (response, painter) =
         ui.allocate_painter(Vec2::new(ui.available_width(), 60.0), egui::Sense::hover());
@@ -252,7 +231,7 @@ fn draw_sim_history_graph(ui: &mut egui::Ui, history_ms: &[f32], stats: Option<(
         rect.bottom() - t.clamp(0.0, 1.0) * rect.height()
     };
 
-    // Average line, drawn first so the samples/spikes sit on top of it.
+    // Average line, drawn first so the samples sit on top of it.
     let avg_y = to_y(avg);
     painter.hline(
         rect.x_range(),
@@ -281,15 +260,7 @@ fn draw_sim_history_graph(ui: &mut egui::Ui, history_ms: &[f32], stats: Option<(
 }
 
 /// Draws the `SimConfig` tuning panel plus Reset/Pause/Start controls.
-///
-/// Takes the `&mut Ui` handed to us by `Context::run_ui` (current egui API;
-/// `Context::run` was removed). We only use it to get at `ui.ctx()` since the
-/// panel is its own floating `egui::Window`, not laid out in the root `Ui`.
-///
-/// Mirrors how the file-watcher reload path (`app.rs`) reacts to a changed
-/// `particle_count`: just call `sim.initialize_particles()` again. There's
-/// no separate "apply" step — every field is live-edited in place via egui's
-/// widgets, which write directly into `sim.config`.
+/// For now everything is live edited
 pub fn draw_config_panel(root_ui: &mut egui::Ui, sim: &mut Simulation, gui_state: &mut GuiState) {
     let ctx = root_ui.ctx().clone();
     egui::Window::new("Simulation Config")
@@ -329,7 +300,7 @@ pub fn draw_config_panel(root_ui: &mut egui::Ui, sim: &mut Simulation, gui_state
                 .add(
                     egui::DragValue::new(&mut particle_count)
                         .speed(1.0)
-                        .range(1..=200_000)
+                        .range(1..=20_000)
                         .prefix("particle_count: "),
                 )
                 .changed();
@@ -343,19 +314,19 @@ pub fn draw_config_panel(root_ui: &mut egui::Ui, sim: &mut Simulation, gui_state
             ui.add(
                 egui::DragValue::new(&mut sim.config.rest_density)
                     .speed(0.1)
-                    .range(0.0..=1000.0)
+                    .range(0.0..=50.0)
                     .prefix("rest_density: "),
             );
             ui.add(
                 egui::DragValue::new(&mut sim.config.stiffness)
                     .speed(0.1)
-                    .range(0.0..=1000.0)
+                    .range(0.0..=2000.0)
                     .prefix("stiffness: "),
             );
             ui.add(
                 egui::DragValue::new(&mut sim.config.stiffness_near)
                     .speed(0.1)
-                    .range(0.0..=1000.0)
+                    .range(0.0..=2000.0)
                     .prefix("stiffness_near: "),
             );
             ui.add(

@@ -3,6 +3,10 @@ name = "vofluid-app"
 version = "0.1.0"
 edition = "2024"
 
+[features]
+default = []
+profile = ["vofluid-core/profile", "dep:serde", "dep:serde_json"]
+
 [dependencies]
 winit.workspace = true
 wgpu = { workspace = true }
@@ -15,5 +19,7 @@ glam = { workspace = true }
 egui = { workspace = true }
 egui-wgpu = { workspace = true }
 egui-winit = { workspace = true }
+serde = { workspace = true, optional = true }
+serde_json = { workspace = true, optional = true }
 vofluid-render = { path = "../vofluid-render" }
 vofluid-core = { path = "../vofluid-core", features = ["all"] }

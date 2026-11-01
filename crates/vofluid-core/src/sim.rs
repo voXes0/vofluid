@@ -7,6 +7,10 @@ pub struct Simulation {
     pub config: SimConfig,
     backend: Backend,
     accumulator: f32,
+    /// The config the profiler last saw. A difference at the next step starts
+    /// a new profiling epoch (see `profiling::begin_epoch`).
+    #[cfg(feature = "profile")]
+    profiled_config: Option<SimConfig>,
 }
 
 const MAX_FRAME_TIME_SECS: f32 = 0.25;
@@ -39,13 +43,28 @@ impl Simulation {
             config,
             backend,
             accumulator: 0.0,
+            #[cfg(feature = "profile")]
+            profiled_config: None,
         };
         sim.initialize_particles();
         sim
     }
 
     pub fn step(&mut self) {
+        #[cfg(feature = "profile")]
+        let _step = self.begin_profiled_step();
         self.backend.step(&mut self.particles, &self.config);
+    }
+
+    /// Starts a profiling epoch if the config changed since the previous
+    /// step, then returns the guard that times this step as a whole.
+    #[cfg(feature = "profile")]
+    fn begin_profiled_step(&mut self) -> crate::profiling::StepGuard {
+        if self.profiled_config.as_ref() != Some(&self.config) {
+            crate::profiling::begin_epoch(&self.config);
+            self.profiled_config = Some(self.config.clone());
+        }
+        crate::profiling::StepGuard::new()
     }
 
     pub fn advance(&mut self, elapsed_secs: f32) -> AdvanceReport {

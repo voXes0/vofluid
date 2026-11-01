@@ -1,4 +1,5 @@
 use glam::Vec2;
+use std::ops::Range;
 
 pub struct UniformGrid {
     particle_index: Vec<usize>,
@@ -6,18 +7,13 @@ pub struct UniformGrid {
     cursors: Vec<u32>,
     pub grid_width: usize,
     pub grid_height: usize,
-    pub cell_size: f32, // Recommend interaction_radius / 2 — see query_neighbours_sorted's stencil-sizing note. Must not exceed interaction_radius, or the 3x3-equivalent stencil undercovers.
+    pub cell_size: f32,
     cell_size_inv: f32,
     origin: Vec2,
     cell_count: usize,
     particle_cells: Vec<usize>, // Cached cells set every rebuild, for only allocating at grid build
-    /// Positions permuted into the same order as `particle_index` (i.e.
-    /// `sorted_positions[k] == positions[particle_index[k]]`), rebuilt every
-    /// `rebuild()` call. Neighbours within a query cell sit contiguously in
-    /// `particle_index`, so reading through this buffer during a neighbour
-    /// scan is a sequential scan of nearby memory instead of a scatter read
-    /// through `positions` at arbitrary original indices.
-    sorted_positions: Vec<Vec2>,
+    sorted_x: Vec<f32>,
+    sorted_y: Vec<f32>,
 }
 
 const GRID_BOUNDS_PADDING: f32 = 1.5;
@@ -32,7 +28,8 @@ impl UniformGrid {
         Self {
             particle_cells: vec![0usize; particle_count],
             particle_index: vec![0usize; particle_count],
-            sorted_positions: vec![Vec2::ZERO; particle_count],
+            sorted_x: vec![0.0; particle_count],
+            sorted_y: vec![0.0; particle_count],
             cell_starts: vec![0u32; cell_count + 1],
             cursors: vec![0u32; cell_count],
             grid_width,
@@ -45,6 +42,8 @@ impl UniformGrid {
     }
 
     pub fn rebuild(&mut self, positions: &[Vec2]) {
+        crate::prof_span!("grid::rebuild");
+
         let cell_count = self.cell_count;
         // ── step 1: zero counts and count particles per cell ──────────────────
         self.cell_starts.fill(0);
@@ -82,7 +81,8 @@ impl UniformGrid {
             }
             let slot = self.cursors[cell] as usize;
             self.particle_index[slot] = i;
-            self.sorted_positions[slot] = *pos;
+            self.sorted_x[slot] = pos.x;
+            self.sorted_y[slot] = pos.y;
             self.cursors[cell] += 1;
         }
     }
@@ -105,102 +105,48 @@ impl UniformGrid {
     pub fn resize_particles(&mut self, new_particle_count: usize) {
         self.particle_index.resize(new_particle_count, 0);
         self.particle_cells.resize(new_particle_count, 0);
-        self.sorted_positions.resize(new_particle_count, Vec2::ZERO);
+        self.sorted_x.resize(new_particle_count, 0.0);
+        self.sorted_y.resize(new_particle_count, 0.0);
     }
 
-    /// Calls `f(j)` for every particle index `j` within `cell_radius` cells
-    /// of `pos`'s cell, where `cell_radius = ceil(radius / cell_size)`. The
-    /// caller is responsible for the final distance check — this only
-    /// guarantees the stencil is wide enough to contain every particle
-    /// within `radius`, not that every visited particle is within `radius`.
+    /// Sorted positions as separate x / y arrays, in the same slot order as
+    /// `particle_index()`. Valid until the next `rebuild()`.
     #[inline]
-    pub fn query_neighbours(&self, pos: Vec2, radius: f32, mut f: impl FnMut(usize)) {
-        #[cfg(feature = "profile")]
-        let _ = tracy_client::span!();
-
-        let Some((ix, iy)) = self.cell_coords(pos) else {
-            return;
-        };
-        let cell_radius = (radius * self.cell_size_inv).ceil() as usize;
-        let x_min = ix.saturating_sub(cell_radius);
-        let y_min = iy.saturating_sub(cell_radius);
-        let x_max = (ix + cell_radius).min(self.grid_width - 1);
-        let y_max = (iy + cell_radius).min(self.grid_height - 1);
-        for cy in y_min..=y_max {
-            for cx in x_min..=x_max {
-                let cell = cx + cy * self.grid_width;
-                let start = self.cell_starts[cell] as usize;
-                let end = self.cell_starts[cell + 1] as usize;
-                for &idx in &self.particle_index[start..end] {
-                    f(idx);
-                }
-            }
-        }
+    pub fn sorted_xy(&self) -> (&[f32], &[f32]) {
+        (&self.sorted_x, &self.sorted_y)
     }
 
-    /// Same cell traversal as `query_neighbours`, but additionally hands
-    /// back the sorted-grid slot and `n_pos` straight from the sorted
-    /// scratch buffer, so callers get a sequential read for position instead
-    /// of a scatter read through the caller's own (unsorted) positions
-    /// array, and can cache the slot for a later sequential re-read (e.g.
-    /// of a caller-side `sorted_densities` buffer) instead of the original
-    /// particle index. Stencil width is derived from `radius`, same as
-    /// `query_neighbours` and `query_radius` — see their docs for the
-    /// stencil-sizing contract.
+    /// One contiguous sorted-slot range per stencil row around `pos`.
+    ///
+    /// Cells are numbered `cx + cy * grid_width` and particles are sorted by
+    /// cell, so all cells of one stencil row are consecutive in sorted order:
+    /// each row is a single `start..end` range of slots. Stencil width is
+    /// derived from `radius` exactly as in `query_neighbours`. These are
+    /// candidates only; the caller still decides which are within `radius`.
+    /// Yields nothing if `pos` is outside the grid.
     #[inline]
-    pub fn query_neighbours_sorted(
+    pub fn stencil_rows(
         &self,
         pos: Vec2,
         radius: f32,
-        mut f: impl FnMut(usize, usize, Vec2),
-    ) {
-        #[cfg(feature = "profile")]
-        let _ = tracy_client::span!();
-
-        let Some((ix, iy)) = self.cell_coords(pos) else {
-            return;
-        };
-        let cell_radius = (radius * self.cell_size_inv).ceil() as usize;
-        let x_min = ix.saturating_sub(cell_radius);
-        let y_min = iy.saturating_sub(cell_radius);
-        let x_max = (ix + cell_radius).min(self.grid_width - 1);
-        let y_max = (iy + cell_radius).min(self.grid_height - 1);
-        for cy in y_min..=y_max {
-            for cx in x_min..=x_max {
-                let cell = cx + cy * self.grid_width;
-                let start = self.cell_starts[cell] as usize;
-                let end = self.cell_starts[cell + 1] as usize;
-                for slot in start..end {
-                    let idx = self.particle_index[slot];
-                    let n_pos = self.sorted_positions[slot];
-                    f(slot, idx, n_pos);
-                }
+    ) -> impl Iterator<Item = Range<usize>> + Clone + '_ {
+        let (x_min, x_max, y_min, y_max) = match self.cell_coords(pos) {
+            Some((ix, iy)) => {
+                let r = (radius * self.cell_size_inv).ceil() as usize;
+                (
+                    ix.saturating_sub(r),
+                    (ix + r).min(self.grid_width - 1),
+                    iy.saturating_sub(r),
+                    (iy + r).min(self.grid_height - 1),
+                )
             }
-        }
-    }
-
-    #[inline]
-    pub fn query_radius(&self, pos: Vec2, radius: f32, mut f: impl FnMut(usize)) {
-        let Some((ix, iy)) = self.cell_coords(pos) else {
-            return;
+            // Empty y range: the iterator yields nothing.
+            None => (0, 0, 1, 0),
         };
-        let cell_radius = (radius * self.cell_size_inv).ceil() as usize;
-
-        let x_min = ix.saturating_sub(cell_radius);
-        let y_min = iy.saturating_sub(cell_radius);
-        let x_max = (ix + cell_radius).min(self.grid_width - 1);
-        let y_max = (iy + cell_radius).min(self.grid_height - 1);
-
-        for cy in y_min..=y_max {
-            for cx in x_min..=x_max {
-                let cell = cx + cy * self.grid_width;
-                let start = self.cell_starts[cell] as usize;
-                let end = self.cell_starts[cell + 1] as usize;
-                for &idx in &self.particle_index[start..end] {
-                    f(idx);
-                }
-            }
-        }
+        (y_min..=y_max).map(move |cy| {
+            let row = cy * self.grid_width;
+            self.cell_starts[row + x_min] as usize..self.cell_starts[row + x_max + 1] as usize
+        })
     }
 
     #[inline]

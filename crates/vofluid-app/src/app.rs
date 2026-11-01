@@ -16,6 +16,11 @@ use winit::{
 #[cfg(not(target_arch = "wasm32"))]
 use crate::gui::{Gui, GuiState, draw_config_panel, draw_fps_overlay};
 
+#[cfg(all(not(target_arch = "wasm32"), feature = "profile"))]
+use crate::profiling_gui::draw_profiler_panel;
+#[cfg(all(not(target_arch = "wasm32"), feature = "profile"))]
+use crate::profiling_sink::InMemorySink;
+
 #[cfg(target_arch = "wasm32")]
 use wasm_bindgen::prelude::*;
 #[cfg(target_arch = "wasm32")]
@@ -52,6 +57,7 @@ impl GpuState {
                 power_preference: wgpu::PowerPreference::HighPerformance,
                 compatible_surface: Some(&surface),
                 force_fallback_adapter: false,
+                apply_limit_buckets: false,
             })
             .await?;
 
@@ -85,6 +91,7 @@ impl GpuState {
             alpha_mode: surface_caps.alpha_modes[0],
             view_formats: vec![],
             desired_maximum_frame_latency: 2,
+            color_space: wgpu::SurfaceColorSpace::Auto,
         };
 
         Ok(Self {
@@ -120,6 +127,10 @@ pub struct App {
     gui_state: GuiState,
     #[cfg(not(target_arch = "wasm32"))]
     frame_stats: FrameStats,
+    #[cfg(all(not(target_arch = "wasm32"), feature = "profile"))]
+    profiler_sink: std::sync::Arc<InMemorySink>,
+    #[cfg(all(not(target_arch = "wasm32"), feature = "profile"))]
+    profiler_export_status: Option<String>,
     /// Wall-clock timestamp of the last `RedrawRequested`. Used only to
     /// compute `elapsed_secs` to hand to `Simulation::advance` — the actual
     /// fixed-timestep accumulator lives in `vofluid-core` since "how much
@@ -243,12 +254,16 @@ impl FrameStats {
 // render pass, egui tessellation, `queue.submit()` — not actual GPU
 // execution time. `wgpu::Surface::present` doesn't block on the GPU, so
 // this can't see e.g. driver-side stalls or actual shader cost. For a true
-// GPU-side breakdown you'd want `wgpu::QuerySet` timestamp queries (or just
-// keep using Tracy/PIX, since you've already got that profiling workflow).
+// GPU-side breakdown you'd want `wgpu::QuerySet` timestamp queries, or an
+// external GPU profiler (RenderDoc, PIX) — the in-house profiler added here
+// (`vofluid_core::profiling`) only times CPU-side spans.
 
 impl App {
     pub fn new(
         sim: Simulation,
+        #[cfg(all(not(target_arch = "wasm32"), feature = "profile"))] profiler_sink: std::sync::Arc<
+            InMemorySink,
+        >,
         #[cfg(target_arch = "wasm32")] event_loop: &EventLoop<(GpuState, ParticleRenderer)>,
     ) -> Self {
         #[cfg(target_arch = "wasm32")]
@@ -272,6 +287,10 @@ impl App {
             gui_state: GuiState::new(),
             #[cfg(not(target_arch = "wasm32"))]
             frame_stats: FrameStats::new(),
+            #[cfg(all(not(target_arch = "wasm32"), feature = "profile"))]
+            profiler_sink,
+            #[cfg(all(not(target_arch = "wasm32"), feature = "profile"))]
+            profiler_export_status: None,
             #[cfg(not(target_arch = "wasm32"))]
             last_tick: std::time::Instant::now(),
             sim,
@@ -362,6 +381,10 @@ impl App {
             // capped at SIM_HISTORY_LEN (240) f32s, once per frame.
             let sim_history: Vec<f32> = self.frame_stats.sim_history.iter().copied().collect();
             let sim_stats = self.frame_stats.sim_history_stats();
+            #[cfg(feature = "profile")]
+            let profiler_sink = &self.profiler_sink;
+            #[cfg(feature = "profile")]
+            let export_status = &mut self.profiler_export_status;
             gui.render(
                 &gpu.device,
                 &gpu.queue,
@@ -373,12 +396,14 @@ impl App {
                 |ctx| {
                     draw_fps_overlay(ctx, total_fps, render_ms, &sim_history, sim_stats);
                     draw_config_panel(ctx, sim, gui_state);
+                    #[cfg(feature = "profile")]
+                    draw_profiler_panel(ctx, profiler_sink, export_status);
                 },
             );
         }
 
         gpu.queue.submit(std::iter::once(encoder.finish()));
-        output.present();
+        gpu.queue.present(output);
     }
 
     fn handle_key(&mut self, event_loop: &ActiveEventLoop, code: KeyCode, is_pressed: bool) {
@@ -648,6 +673,10 @@ pub fn run() -> anyhow::Result<()> {
 
     #[cfg(target_arch = "wasm32")]
     console_log::init_with_level(log::Level::Info).unwrap();
+
+    #[cfg(all(not(target_arch = "wasm32"), feature = "profile"))]
+    let profiler_sink = vofluid_core::profiling::install_sink(InMemorySink::new());
+
     let config = load_sim_config("assets/default.ron").expect("could not load config");
     let sim = Simulation::new(
         vofluid_core::backend::Backend::Single(vofluid_core::backends::single::SingleThread::new(
@@ -659,6 +688,9 @@ pub fn run() -> anyhow::Result<()> {
     #[cfg(not(target_arch = "wasm32"))]
     {
         let event_loop = EventLoop::with_user_event().build()?;
+        #[cfg(feature = "profile")]
+        let mut app = App::new(sim, profiler_sink);
+        #[cfg(not(feature = "profile"))]
         let mut app = App::new(sim);
         event_loop.run_app(&mut app)?;
     }

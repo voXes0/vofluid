@@ -4,30 +4,31 @@ edition = "2024"
 members = [
     "crates/vofluid-app",
     "crates/vofluid-core",
-    "crates/vofluid-gpu",
     "crates/vofluid-render",
     "crates/vofluid-bevy",
+    "crates/vofluid-web",
 ]
 
 [workspace.dependencies]
 anyhow = "1.0"
 thiserror = '2.0'
 bytemuck = { version = "1.22", features = ["derive"] }
-glam = "0.33"
+glam = "0.34"
 log = "0.4"
-pollster = "0.4"
+pollster = "1.0"
 rand = "0.10"
-rayon = "1.10"
+rayon = "1.12"
 ron = "0.12"
 serde = { version = "1", features = ["derive"] }
-wgpu = "29.0"
+serde_json = "1"
+wgpu = "30.0"
 winit = "0.30"
 env_logger = "0.11"
 criterion = { version = "0.8", features = ["html_reports"] }
 notify = "8"
-egui = "0.35"
-egui-wgpu = "0.35"
-egui-winit = { version = "0.35", default-features = false, features = [
+egui = { version = "0.37", features = ["default_fonts"] }
+egui-wgpu = "0.37"
+egui-winit = { version = "0.37", default-features = false, features = [
     "clipboard",
     "wayland",
     "x11",
@@ -37,8 +38,15 @@ console_error_panic_hook = "0.1"
 console_log = "1.0"
 wasm-bindgen = "0.2"
 wasm-bindgen-futures = "0.4"
-web-sys = { version = "0.3", features = ["Document", "Window", "Element"] }
-tracy-client = "0.18.4"
+web-sys = { version = "0.3", features = [
+    "Document",
+    "Window",
+    "Element",
+    "HtmlCanvasElement",
+    "console",
+] }
+js-sys = "0.3"
+getrandom = { version = "0.4", features = ["wasm_js"] }
 
 [profile.dev]
 opt-level = 3
@@ -57,7 +65,7 @@ lto = "fat"
 codegen-units = 1
 panic = "abort"
 strip = true
-debug = true
+debug = false
 
 [profile.release.package."*"]
 opt-level = 3

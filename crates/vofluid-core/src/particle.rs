@@ -287,8 +287,7 @@ impl Particles {
     /// state. Called at the top of each simulation step (Algorithm 1, line 8).
     #[inline]
     pub(crate) fn save_prev_positions(&mut self) {
-        #[cfg(feature = "profile")]
-        let _ = tracy_client::span!();
+        crate::prof_span!("particles::save_prev_positions");
 
         self.prevs.copy_from_slice(&self.positions);
     }
@@ -297,8 +296,7 @@ impl Particles {
     /// was called (Algorithm 1, line 20: `v = (x - x_prev) / dt`).
     #[inline]
     pub(crate) fn reconstruct_velocities(&mut self, dt: f32) {
-        #[cfg(feature = "profile")]
-        let _ = tracy_client::span!();
+        crate::prof_span!("particles::reconstruct_velocities");
 
         let inv_dt = 1.0 / dt;
         for ((pos, prev), vel) in self
@@ -315,8 +313,7 @@ impl Particles {
     /// velocity (Algorithm 1, line 3: `v_i += dt * g`).
     #[inline]
     pub(crate) fn apply_uniform_acceleration(&mut self, accel: Vec2, dt: f32) {
-        #[cfg(feature = "profile")]
-        let _ = tracy_client::span!();
+        crate::prof_span!("particles::apply_uniform_acceleration");
 
         let delta = accel * dt;
         for vel in self.vels.iter_mut() {
@@ -327,8 +324,7 @@ impl Particles {
     /// Advances positions by velocity (Algorithm 1, line 10: `x_i += dt * v_i`).
     #[inline]
     pub(crate) fn integrate_positions(&mut self, dt: f32) {
-        #[cfg(feature = "profile")]
-        let _ = tracy_client::span!();
+        crate::prof_span!("particles::integrate_positions");
 
         for (pos, vel) in self.positions.iter_mut().zip(self.vels.iter()) {
             *pos += *vel * dt;
@@ -341,8 +337,7 @@ impl Particles {
     /// with no zero-fill step needed.
     #[inline]
     pub(crate) fn begin_scatter_pass(&mut self) {
-        #[cfg(feature = "profile")]
-        let _ = tracy_client::span!();
+        crate::prof_span!("particles::begin_scatter_pass");
 
         self.next_positions.copy_from_slice(&self.positions);
     }
@@ -353,8 +348,7 @@ impl Particles {
     /// `begin_scatter_pass` call.
     #[inline]
     pub(crate) fn end_scatter_pass(&mut self) {
-        #[cfg(feature = "profile")]
-        let _ = tracy_client::span!();
+        crate::prof_span!("particles::end_scatter_pass");
 
         std::mem::swap(&mut self.positions, &mut self.next_positions);
     }

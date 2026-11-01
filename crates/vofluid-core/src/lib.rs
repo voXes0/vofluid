@@ -4,6 +4,9 @@ pub mod config;
 mod grid;
 mod neighbor;
 pub mod particle;
+pub mod profiling;
+#[cfg(feature = "profile")]
+mod profiling_hw;
 pub mod sim;
 
 #[cfg(feature = "serialzation")]

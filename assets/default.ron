@@ -2,7 +2,7 @@
     debug: false,
     substeps: 3,
     dt: 0.02,
-    particle_count: 300,
+    particle_count: 2000,
     rest_density: 10.,
     stiffness: 500.,
     stiffness_near: 1250.,
