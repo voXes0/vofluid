@@ -1,12 +1,10 @@
 use crate::config::SimConfig;
 use crate::grid::UniformGrid;
-use crate::neighbor::NeighbourCache;
 use crate::particle::{Densities, Particles, Positions};
 use glam::*;
 
 pub struct SingleThread {
     grid: UniformGrid,
-    neighbour_cache: NeighbourCache,
     /// Scaled pressure `dt²·stiffness·(rho - rest)` per particle, in
     /// sorted-grid order (same slot order as `grid.sorted_xy()`). Built after
     /// pass 1 so pass 2 reads neighbour pressures as contiguous slices.
@@ -22,7 +20,6 @@ impl SingleThread {
                 config.interaction_radius * 0.5,
                 config.particle_count,
             ),
-            neighbour_cache: NeighbourCache::with_capacity(config.particle_count, 64),
             sorted_pressure: vec![0.0; config.particle_count],
             sorted_pressure_near: vec![0.0; config.particle_count],
         }
@@ -47,7 +44,6 @@ impl SingleThread {
                 config,
                 &self.grid,
                 sub_dt,
-                &mut self.neighbour_cache,
                 &mut self.sorted_pressure,
                 &mut self.sorted_pressure_near,
             );
@@ -102,23 +98,14 @@ fn fmax(a: f32, b: f32) -> f32 {
     if a > b { a } else { b }
 }
 
-/// Pass 1: per particle, density / near-density plus the cached influence of
-/// every stencil candidate.
+/// Pass 1: density / near-density per particle. Nothing but the densities is
+/// stored; pass 2 recomputes the pair distances instead of reading them back
+/// from memory.
 ///
-///   B. branch-free elementwise math over every candidate (contiguous runs,
-///      one per stencil row), written straight into the cache arrays. `inf`
-///      is clamped to 0 for candidates outside the radius.
-///   C. density sums over `inf`. Out-of-range candidates add exactly 0, and
-///      they stay in the cache as zero-contribution entries.
-/// The sums are kept out of loop B on purpose: a float reduction would stop
-/// the compiler from vectorizing that loop.
-fn gather_pass(
-    positions: &[Vec2],
-    densities: &mut [Vec2],
-    grid: &UniformGrid,
-    c: &Consts,
-    cache: &mut NeighbourCache,
-) {
+/// For every stencil candidate (contiguous runs, one per stencil row)
+/// `inf = max(0, 1 - d/r)`, which is exactly 0 outside the radius, so
+/// out-of-range candidates add nothing to the sums.
+fn gather_pass(positions: &[Vec2], densities: &mut [Vec2], grid: &UniformGrid, c: &Consts) {
     crate::prof_span!("single::double_density::gather_pass");
 
     #[cfg(feature = "profile")]
@@ -127,47 +114,28 @@ fn gather_pass(
     let (sx, sy) = grid.sorted_xy();
 
     for (p, out) in positions.iter().zip(densities.iter_mut()) {
-        let p = *p;
+        let mut rho = 0.0f32;
+        let mut rho_near = 0.0f32;
 
-        let rows = grid.stencil_rows(p, c.radius);
-        let n: usize = rows.clone().map(|r| r.len()).sum();
-        #[cfg(feature = "profile")]
-        {
-            candidates += n as u64;
-        }
-        let (c_inf, c_ux, c_uy) = cache.candidate_slices(n);
-
-        // B: elementwise, no branches, no reductions.
-        let mut off = 0;
-        for r in rows {
+        for r in grid.stencil_rows(*p, c.radius) {
+            #[cfg(feature = "profile")]
+            {
+                candidates += r.len() as u64;
+            }
             let xs = &sx[r.clone()];
             let ys = &sy[r];
-            let m = xs.len();
-            let inf = &mut c_inf[off..off + m];
-            let ux = &mut c_ux[off..off + m];
-            let uy = &mut c_uy[off..off + m];
-            for i in 0..m {
-                let dx = xs[i] - p.x;
-                let dy = ys[i] - p.y;
-                let d = fmax((dx * dx + dy * dy).sqrt(), c.min_dist);
-                let inv_d = d.recip();
-                inf[i] = fmax(1.0 - d * c.inv_r, 0.0);
-                ux[i] = dx * inv_d;
-                uy[i] = dy * inv_d;
+            for (&x, &y) in xs.iter().zip(ys) {
+                let ox = x - p.x;
+                let oy = y - p.y;
+                let d = fmax((ox * ox + oy * oy).sqrt(), c.min_dist);
+                let f = fmax(1.0 - d * c.inv_r, 0.0);
+                let f2 = f * f;
+                rho = rho.algebraic_add(f2);
+                rho_near = rho_near.algebraic_add(f2 * f);
             }
-            off += m;
-        }
-
-        // C: sum densities.
-        let (mut rho, mut rho_near) = (0.0f32, 0.0f32);
-        for &f in c_inf.iter() {
-            let f2 = f.algebraic_mul(f);
-            rho = rho.algebraic_add(f2);
-            rho_near = rho_near.algebraic_add(f2.algebraic_mul(f));
         }
 
         *out = vec2(rho, rho_near);
-        cache.finish_particle();
     }
 
     crate::prof_count!(
@@ -202,12 +170,13 @@ fn build_sorted_pressures(
     }
 }
 
-/// Pass 2: pairwise pressure displacement.
+/// Pass 2: pairwise pressure displacement. Recomputes the pair distance and
+/// influence per candidate and applies the displacement in the same loop, so
+/// the only memory it reads per candidate is the sorted positions and
+/// pressures (contiguous runs, one per stencil row).
 ///
-/// Pass 1 stored one cache entry per stencil candidate in `stencil_rows`
-/// order. Recomputing the same rows here (same positions, same grid, so the
-/// same ranges) lines the cache entries up with contiguous runs of the sorted
-/// pressure arrays, so no per-neighbour index lookup is needed.
+/// Candidates outside the radius have `inf == 0`, so `mag == 0` and they add
+/// exactly nothing.
 fn pressure_pass(
     positions: &[Vec2],
     densities: &[Vec2],
@@ -215,41 +184,41 @@ fn pressure_pass(
     sorted_pressure: &[f32],
     sorted_pressure_near: &[f32],
     grid: &UniformGrid,
-    cache: &NeighbourCache,
     c: &Consts,
 ) {
     crate::prof_span!("single::double_density::pressure_pass");
 
-    for (i, ((pos, d), next_p)) in positions
+    let (sx, sy) = grid.sorted_xy();
+
+    for ((p, d), next_p) in positions
         .iter()
         .zip(densities)
         .zip(next_positions.iter_mut())
-        .enumerate()
     {
         // This particle's own scaled pressure, once per particle.
         let pressure = c.k * (d.x - c.rest);
         let pressure_near = c.k_near * d.y;
-        let nb = cache.neighbours_of(i);
 
         let (mut dx, mut dy) = (0.0f32, 0.0f32);
-        let mut off = 0;
-        for r in grid.stencil_rows(*pos, c.radius) {
+        for r in grid.stencil_rows(*p, c.radius) {
+            let xs = &sx[r.clone()];
+            let ys = &sy[r.clone()];
             let sp = &sorted_pressure[r.clone()];
             let spn = &sorted_pressure_near[r];
-            let m = sp.len();
-            let inf = &nb.inf[off..off + m];
-            let ux = &nb.dir_x[off..off + m];
-            let uy = &nb.dir_y[off..off + m];
-            for j in 0..m {
-                let s = pressure + sp[j];
-                let s_near = pressure_near + spn[j];
-                let f = inf[j];
+            for (((&x, &y), &q), &qn) in xs.iter().zip(ys).zip(sp).zip(spn) {
+                let ox = x - p.x;
+                let oy = y - p.y;
+                let d = fmax((ox * ox + oy * oy).sqrt(), c.min_dist);
+                let f = fmax(1.0 - d * c.inv_r, 0.0);
+                let s = pressure + q;
+                let s_near = pressure_near + qn;
                 // dt²·(S·inf + S_near·inf²) == inf·(S + S_near·inf)
                 let mag = f * (s + s_near * f);
-                dx = dx.algebraic_add(ux[j] * mag);
-                dy = dy.algebraic_add(uy[j] * mag);
+                // displacement = unit direction · mag = offset · (mag / d)
+                let k = mag / d;
+                dx = dx.algebraic_add(ox * k);
+                dy = dy.algebraic_add(oy * k);
             }
-            off += m;
         }
 
         // Negate once instead of per pair (matches the old `-dir` sign).
@@ -257,6 +226,7 @@ fn pressure_pass(
     }
 }
 
+#[allow(clippy::too_many_arguments)]
 fn double_density(
     positions: &Positions,
     next_positions: &mut Positions,
@@ -264,7 +234,6 @@ fn double_density(
     config: &SimConfig,
     grid: &UniformGrid,
     dt: f32,
-    cache: &mut NeighbourCache,
     sorted_pressure: &mut [f32],
     sorted_pressure_near: &mut [f32],
 ) {
@@ -272,11 +241,9 @@ fn double_density(
 
     let c = Consts::new(config, dt);
 
-    // Pass 1: gather density / near-density, cache neighbour influence.
-    // Every densities[i] is overwritten, so no reset() is needed.
-    cache.clear();
-    gather_pass(positions, densities, grid, &c, cache);
-    crate::prof_count!("single::double_density::neighbours", cache.len());
+    // Pass 1: density / near-density. Every densities[i] is overwritten, so
+    // no reset() is needed.
+    gather_pass(positions, densities, grid, &c);
 
     // Permute into sorted-grid order, converting density -> scaled pressure.
     build_sorted_pressures(
@@ -287,7 +254,7 @@ fn double_density(
         &c,
     );
 
-    // Pass 2: pairwise pressure displacement from the cached entries.
+    // Pass 2: pairwise pressure displacement.
     pressure_pass(
         positions,
         densities,
@@ -295,7 +262,6 @@ fn double_density(
         sorted_pressure,
         sorted_pressure_near,
         grid,
-        cache,
         &c,
     );
 }
