@@ -108,19 +108,35 @@ fn fmax(a: f32, b: f32) -> f32 {
 fn gather_pass(positions: &[Vec2], densities: &mut [Vec2], grid: &UniformGrid, c: &Consts) {
     crate::prof_span!("single::double_density::gather_pass");
 
+    // Profile-only bookkeeping: work counters, plus sampled per-particle
+    // timing (`profiling_hw::PhaseSampler`: one particle in 32). On sampled
+    // particles the real neighbours are also counted, after the timed part,
+    // to estimate how many candidate tests are wasted.
     #[cfg(feature = "profile")]
-    let mut candidates = 0u64;
+    let (mut candidates, mut rows_seen) = (0u64, 0u64);
+    #[cfg(feature = "profile")]
+    let (mut candidates_sampled, mut neighbours_sampled) = (0u64, 0u64);
+    #[cfg(feature = "profile")]
+    let mut sampler = crate::profiling_hw::PhaseSampler::new([
+        "single::double_density::gather_pass::particle",
+    ]);
 
     let (sx, sy) = grid.sorted_xy();
 
     for (p, out) in positions.iter().zip(densities.iter_mut()) {
+        #[cfg(feature = "profile")]
+        let mut tick = sampler.start();
+        #[cfg(feature = "profile")]
+        let mut particle_candidates = 0usize;
+
         let mut rho = 0.0f32;
         let mut rho_near = 0.0f32;
 
         for r in grid.stencil_rows(*p, c.radius) {
             #[cfg(feature = "profile")]
             {
-                candidates += r.len() as u64;
+                particle_candidates += r.len();
+                rows_seen += 1;
             }
             let xs = &sx[r.clone()];
             let ys = &sy[r];
@@ -136,12 +152,52 @@ fn gather_pass(positions: &[Vec2], densities: &mut [Vec2], grid: &UniformGrid, c
         }
 
         *out = vec2(rho, rho_near);
+
+        #[cfg(feature = "profile")]
+        {
+            sampler.lap(&mut tick, 0, particle_candidates as f64);
+            candidates += particle_candidates as u64;
+            if tick.is_sampled() {
+                // After the last lap, so none of this is timed.
+                candidates_sampled += particle_candidates as u64;
+                neighbours_sampled += count_in_radius(grid, sx, sy, *p, c);
+            }
+        }
     }
 
+    #[cfg(feature = "profile")]
+    sampler.finish();
     crate::prof_count!(
         "single::double_density::gather_pass::candidates",
         candidates
     );
+    crate::prof_count!("single::double_density::gather_pass::rows", rows_seen);
+    // `_sampled` counters are estimates from the sampled particles only.
+    crate::prof_count!(
+        "single::double_density::gather_pass::candidates_sampled",
+        candidates_sampled
+    );
+    crate::prof_count!(
+        "single::double_density::gather_pass::neighbours_sampled",
+        neighbours_sampled
+    );
+}
+
+/// Profile-only: how many of `p`'s stencil candidates lie inside the
+/// interaction radius, i.e. are real neighbours (`inf > 0` in the passes).
+/// Squared-distance compare, no sqrt, so it is cheap even on sampled
+/// particles.
+#[cfg(feature = "profile")]
+fn count_in_radius(grid: &UniformGrid, sx: &[f32], sy: &[f32], p: Vec2, c: &Consts) -> u64 {
+    let radius_sq = c.radius * c.radius;
+    let mut inside = 0u64;
+    for r in grid.stencil_rows(p, c.radius) {
+        for (&x, &y) in sx[r.clone()].iter().zip(&sy[r]) {
+            let (ox, oy) = (x - p.x, y - p.y);
+            inside += (ox * ox + oy * oy < radius_sq) as u64;
+        }
+    }
+    inside
 }
 
 /// Maps densities into sorted-grid order while converting them to scaled
@@ -188,6 +244,15 @@ fn pressure_pass(
 ) {
     crate::prof_span!("single::double_density::pressure_pass");
 
+    // Profile-only: work counters and sampled per-particle timing, as in
+    // `gather_pass`. Pass 2 visits the same candidates as pass 1.
+    #[cfg(feature = "profile")]
+    let (mut candidates, mut rows_seen) = (0u64, 0u64);
+    #[cfg(feature = "profile")]
+    let mut sampler = crate::profiling_hw::PhaseSampler::new([
+        "single::double_density::pressure_pass::particle",
+    ]);
+
     let (sx, sy) = grid.sorted_xy();
 
     for ((p, d), next_p) in positions
@@ -195,12 +260,22 @@ fn pressure_pass(
         .zip(densities)
         .zip(next_positions.iter_mut())
     {
+        #[cfg(feature = "profile")]
+        let mut tick = sampler.start();
+        #[cfg(feature = "profile")]
+        let mut particle_candidates = 0usize;
+
         // This particle's own scaled pressure, once per particle.
         let pressure = c.k * (d.x - c.rest);
         let pressure_near = c.k_near * d.y;
 
         let (mut dx, mut dy) = (0.0f32, 0.0f32);
         for r in grid.stencil_rows(*p, c.radius) {
+            #[cfg(feature = "profile")]
+            {
+                particle_candidates += r.len();
+                rows_seen += 1;
+            }
             let xs = &sx[r.clone()];
             let ys = &sy[r.clone()];
             let sp = &sorted_pressure[r.clone()];
@@ -223,7 +298,21 @@ fn pressure_pass(
 
         // Negate once instead of per pair (matches the old `-dir` sign).
         *next_p -= vec2(dx, dy);
+
+        #[cfg(feature = "profile")]
+        {
+            sampler.lap(&mut tick, 0, particle_candidates as f64);
+            candidates += particle_candidates as u64;
+        }
     }
+
+    #[cfg(feature = "profile")]
+    sampler.finish();
+    crate::prof_count!(
+        "single::double_density::pressure_pass::candidates",
+        candidates
+    );
+    crate::prof_count!("single::double_density::pressure_pass::rows", rows_seen);
 }
 
 #[allow(clippy::too_many_arguments)]

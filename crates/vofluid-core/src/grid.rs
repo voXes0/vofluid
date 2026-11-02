@@ -45,46 +45,68 @@ impl UniformGrid {
         crate::prof_span!("grid::rebuild");
 
         let cell_count = self.cell_count;
-        // ── step 1: zero counts and count particles per cell ──────────────────
-        self.cell_starts.fill(0);
+        // Particles outside the grid are dropped from every neighbour query;
+        // counting them (profile builds) shows if that ever happens.
+        #[cfg(feature = "profile")]
+        let mut out_of_grid = 0u64;
 
-        for (i, pos) in positions.iter().enumerate() {
-            match self.cell_of(*pos) {
-                Some(cell) => {
-                    self.particle_cells[i] = cell;
-                    self.cell_starts[cell] += 1;
-                }
-                None => {
-                    self.particle_cells[i] = usize::MAX;
+        // ── step 1: zero counts and count particles per cell ──────────────────
+        {
+            crate::prof_span!("grid::rebuild::count_cells");
+            self.cell_starts.fill(0);
+
+            for (i, pos) in positions.iter().enumerate() {
+                match self.cell_of(*pos) {
+                    Some(cell) => {
+                        self.particle_cells[i] = cell;
+                        self.cell_starts[cell] += 1;
+                    }
+                    None => {
+                        self.particle_cells[i] = usize::MAX;
+                        #[cfg(feature = "profile")]
+                        {
+                            out_of_grid += 1;
+                        }
+                    }
                 }
             }
         }
 
         // ── step 2: prefix sum ────────────────────────────────────────────────
-        let mut total = 0u32;
-        for c in 0..cell_count {
-            let count = self.cell_starts[c];
-            self.cell_starts[c] = total;
-            total += count;
+        {
+            crate::prof_span!("grid::rebuild::prefix_sum");
+            let mut total = 0u32;
+            for c in 0..cell_count {
+                let count = self.cell_starts[c];
+                self.cell_starts[c] = total;
+                total += count;
+            }
+            self.cell_starts[cell_count] = total;
         }
-        self.cell_starts[cell_count] = total;
 
         // ── step 3: fill particle_index ───────────────────────────────────────
-        // Copy start indices into cursors without allocating.
-        self.cursors
-            .copy_from_slice(&self.cell_starts[..cell_count]);
+        {
+            crate::prof_span!("grid::rebuild::scatter");
+            // Copy start indices into cursors without allocating.
+            self.cursors
+                .copy_from_slice(&self.cell_starts[..cell_count]);
 
-        for (i, pos) in positions.iter().enumerate() {
-            let cell = self.particle_cells[i];
-            if cell == usize::MAX {
-                continue;
+            for (i, pos) in positions.iter().enumerate() {
+                let cell = self.particle_cells[i];
+                if cell == usize::MAX {
+                    continue;
+                }
+                let slot = self.cursors[cell] as usize;
+                self.particle_index[slot] = i;
+                self.sorted_x[slot] = pos.x;
+                self.sorted_y[slot] = pos.y;
+                self.cursors[cell] += 1;
             }
-            let slot = self.cursors[cell] as usize;
-            self.particle_index[slot] = i;
-            self.sorted_x[slot] = pos.x;
-            self.sorted_y[slot] = pos.y;
-            self.cursors[cell] += 1;
         }
+
+        // Cells scale the prefix sum, particles the other two steps.
+        crate::prof_count!("grid::rebuild::cells", cell_count);
+        crate::prof_count!("grid::rebuild::out_of_grid", out_of_grid);
     }
 
     pub fn resize_bounds(&mut self, bounds: Vec2) {

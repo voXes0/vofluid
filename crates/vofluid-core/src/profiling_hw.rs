@@ -27,7 +27,7 @@
 //! and the sampler falls back to `Instant`.
 
 use std::sync::OnceLock;
-use std::sync::atomic::{AtomicU32, Ordering};
+use std::sync::atomic::{AtomicU32, AtomicUsize, Ordering};
 use std::time::{Duration, Instant};
 
 use crate::profiling::{CoreType, FitSums, HwSample};
@@ -242,8 +242,8 @@ impl Tick {
 ///
 /// ```ignore
 /// let mut sampler = PhaseSampler::new(["pass::setup", "pass::math"]);
-/// for (i, particle) in particles.iter().enumerate() {
-///     let mut tick = sampler.start(i);
+/// for particle in particles.iter() {
+///     let mut tick = sampler.start();
 ///     /* setup */
 ///     sampler.lap(&mut tick, 0, work_items as f64);
 ///     /* math */
@@ -252,26 +252,37 @@ impl Tick {
 /// sampler.finish(); // one `Sink::fit` per phase
 /// ```
 ///
-/// Unsampled particles cost one predictable branch per call.
+/// `start` counts its own calls, so the loop needs no index. Which particles
+/// are sampled rotates from one sampler to the next, so successive calls of
+/// a pass don't keep timing the same spatial slice of the fluid. Unsampled
+/// particles cost one predictable branch per call.
 pub struct PhaseSampler<const N: usize> {
     labels: [&'static str; N],
     fits: [FitSums; N],
     cal: &'static Calibration,
+    /// Particles started so far, plus this sampler's rotating offset.
+    seen: usize,
 }
 
 impl<const N: usize> PhaseSampler<N> {
     pub fn new(labels: [&'static str; N]) -> Self {
+        // 7 is coprime to `SAMPLE_EVERY`, so the offset visits every residue.
+        static ROTATION: AtomicUsize = AtomicUsize::new(0);
         Self {
             labels,
             fits: [FitSums::default(); N],
             cal: calibration(),
+            seen: ROTATION.fetch_add(7, Ordering::Relaxed) % SAMPLE_EVERY,
         }
     }
 
-    /// Starts the clock if particle `index` is one of the sampled ones.
+    /// Starts the clock if this is one of the sampled particles (every
+    /// `SAMPLE_EVERY`-th call).
     #[inline(always)]
-    pub fn start(&self, index: usize) -> Tick {
-        if index % SAMPLE_EVERY == 0 {
+    pub fn start(&mut self) -> Tick {
+        let on = self.seen % SAMPLE_EVERY == 0;
+        self.seen += 1;
+        if on {
             Tick {
                 last: now_ticks(),
                 on: true,
@@ -319,17 +330,24 @@ mod tests {
     }
 
     #[test]
-    fn only_every_nth_particle_is_sampled() {
-        let sampler = PhaseSampler::new(["a"]);
-        assert!(sampler.start(0).is_sampled());
-        assert!(!sampler.start(1).is_sampled());
-        assert!(sampler.start(SAMPLE_EVERY).is_sampled());
+    fn exactly_every_nth_particle_is_sampled() {
+        let mut sampler = PhaseSampler::new(["a"]);
+        let sampled = (0..SAMPLE_EVERY * 4)
+            .filter(|_| sampler.start().is_sampled())
+            .count();
+        assert_eq!(sampled, 4);
     }
 
     #[test]
     fn a_sampled_lap_is_recorded() {
         let mut sampler = PhaseSampler::new(["a"]);
-        let mut tick = sampler.start(0);
+        // Find a sampled particle, whatever this sampler's offset is.
+        let mut tick = loop {
+            let t = sampler.start();
+            if t.is_sampled() {
+                break t;
+            }
+        };
         sampler.lap(&mut tick, 0, 3.0);
         assert_eq!(sampler.fits[0].n, 1);
         assert_eq!(sampler.fits[0].sx, 3.0);
