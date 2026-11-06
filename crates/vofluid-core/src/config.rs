@@ -1,11 +1,7 @@
 use glam::Vec2;
 
 /// Simulation configuration parameters.
-/// Serialisation behind the `serde` feature so the core stays lean
-/// when used without config-file support.
-///
-/// `PartialEq` lets `Simulation` notice a changed config (the profiler starts
-/// a new epoch each time).
+/// `PartialEq` lets `Simulation` notice a changed config
 #[cfg_attr(feature = "serialzation", derive(serde::Serialize, serde::Deserialize))]
 #[derive(Clone, Debug, PartialEq)]
 pub struct SimConfig {
@@ -31,7 +27,7 @@ impl Default for SimConfig {
             debug: false,
             substeps: 3,
             dt: 0.02,
-            particle_count: 1000,
+            particle_count: 2000,
             rest_density: 10.,
             stiffness: 500.,
             stiffness_near: 1250.,

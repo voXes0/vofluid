@@ -37,7 +37,7 @@ impl AdvanceReport {
 
 impl Simulation {
     pub fn new(backend: Backend, config: SimConfig) -> Self {
-        let particles = Particles::new(config.particle_count, 128);
+        let particles = Particles::new(config.particle_count);
         let mut sim = Self {
             particles,
             config,
@@ -129,5 +129,38 @@ impl Simulation {
 
     pub fn resize_bounds(&mut self, new_bounds: Vec2) {
         self.backend.resize_bounds(new_bounds);
+    }
+
+    pub fn dump_snapshot(&self, path: &str) -> std::io::Result<()> {
+        use std::io::Write;
+        let c = &self.config;
+        let r = c.interaction_radius;
+        let pos = &self.particles.positions;
+        let mut out = std::io::BufWriter::new(std::fs::File::create(path)?);
+        writeln!(
+            out,
+            "# r={} rest={} stiff={} near={} substeps={} dt={} g={}",
+            r, c.rest_density, c.stiffness, c.stiffness_near, c.substeps, c.dt, c.gravity.y
+        )?;
+        writeln!(out, "i,x,y,vx,vy,rho,rho_near,nearest")?;
+        for i in 0..pos.len() {
+            let (mut rho, mut rho_near, mut nearest) = (0.0f32, 0.0f32, f32::MAX);
+            for j in 0..pos.len() {
+                let d = pos[i].distance(pos[j]);
+                if j != i {
+                    nearest = nearest.min(d);
+                }
+                let f = (1.0 - d.max(r * 1e-3) / r).max(0.0);
+                rho += f * f;
+                rho_near += f * f * f;
+            }
+            let v = self.particles.vels[i];
+            writeln!(
+                out,
+                "{i},{},{},{},{},{rho},{rho_near},{nearest}",
+                pos[i].x, pos[i].y, v.x, v.y
+            )?;
+        }
+        Ok(())
     }
 }

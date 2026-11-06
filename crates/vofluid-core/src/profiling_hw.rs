@@ -119,14 +119,13 @@ fn core_type() -> CoreType {
     // Hybrid CPUs set CPUID.(7,0):EDX[15]; only then is leaf 0x1A meaningful.
     static HYBRID: OnceLock<bool> = OnceLock::new();
     // SAFETY: `cpuid` exists on every x86_64 CPU.
-    let hybrid = *HYBRID.get_or_init(|| unsafe {
-        __cpuid(0).eax >= 0x1A && (__cpuid_count(7, 0).edx >> 15) & 1 == 1
-    });
+    let hybrid =
+        *HYBRID.get_or_init(|| __cpuid(0).eax >= 0x1A && (__cpuid_count(7, 0).edx >> 15) & 1 == 1);
     if !hybrid {
         return CoreType::Unknown;
     }
     // SAFETY: as above; the leaf's existence was checked in `HYBRID`.
-    let leaf = unsafe { __cpuid_count(0x1A, 0) };
+    let leaf = __cpuid_count(0x1A, 0);
     match leaf.eax >> 24 {
         0x40 => CoreType::Performance,
         0x20 => CoreType::Efficiency,
@@ -169,10 +168,7 @@ fn probe_clock_mhz() -> Option<f32> {
     let end = now_ticks();
     std::hint::black_box(result);
 
-    let ns = end
-        .wrapping_sub(start)
-        .saturating_sub(cal.overhead_ticks) as f64
-        * cal.ns_per_tick;
+    let ns = end.wrapping_sub(start).saturating_sub(cal.overhead_ticks) as f64 * cal.ns_per_tick;
     // iterations per ns is GHz.
     (ns > 0.0).then(|| (CLOCK_PROBE_ITERATIONS as f64 / ns * 1000.0) as f32)
 }
@@ -209,7 +205,8 @@ impl StepProbe {
         let nth = STEPS.fetch_add(1, Ordering::Relaxed);
         HwSample {
             core_type,
-            clock_mhz: (nth % CLOCK_PROBE_EVERY == 0)
+            clock_mhz: nth
+                .is_multiple_of(CLOCK_PROBE_EVERY)
                 .then(probe_clock_mhz)
                 .flatten(),
         }
@@ -280,7 +277,7 @@ impl<const N: usize> PhaseSampler<N> {
     /// `SAMPLE_EVERY`-th call).
     #[inline(always)]
     pub fn start(&mut self) -> Tick {
-        let on = self.seen % SAMPLE_EVERY == 0;
+        let on = self.seen.is_multiple_of(SAMPLE_EVERY);
         self.seen += 1;
         if on {
             Tick {
@@ -313,7 +310,7 @@ impl<const N: usize> PhaseSampler<N> {
     pub fn finish(self) {
         for (label, sums) in self.labels.iter().zip(self.fits.iter()) {
             if sums.n > 0 {
-                crate::profiling::fit(*label, *sums);
+                crate::profiling::fit(label, *sums);
             }
         }
     }

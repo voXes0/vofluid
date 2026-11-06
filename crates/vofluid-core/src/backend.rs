@@ -1,4 +1,4 @@
-// backend.rs
+//! Backend agnostic types (Single-threaded, Multi-threaded, Compute shader)
 #[cfg(feature = "parallel")]
 use crate::backends::parallel::ParallelBackend;
 use crate::backends::single::SingleThread;
@@ -6,6 +6,8 @@ use crate::config::SimConfig;
 use crate::particle::Particles;
 use glam::*;
 
+// TODO Remove this once other backends are developed
+#[allow(clippy::large_enum_variant)]
 pub enum Backend {
     Single(SingleThread),
     #[cfg(feature = "parallel")]

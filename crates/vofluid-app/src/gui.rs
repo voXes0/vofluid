@@ -109,8 +109,7 @@ impl Gui {
     }
 }
 
-/// Tracks gui_state/resume state for the substeps field without losing whatever
-/// value the user had configured before pausing.
+/// Tracks gui_state
 pub struct GuiState {
     /// `substeps` value to restore when resuming. `None` while running.
     paused_substeps: Option<u32>,
@@ -127,7 +126,7 @@ impl GuiState {
         self.paused_substeps.is_some()
     }
 
-    pub fn gui_state(&mut self, sim: &mut Simulation) {
+    pub fn pause(&mut self, sim: &mut Simulation) {
         if self.paused_substeps.is_none() {
             self.paused_substeps = Some(sim.config.substeps);
             sim.config.substeps = 0;
@@ -137,15 +136,6 @@ impl GuiState {
     pub fn start(&mut self, sim: &mut Simulation) {
         if let Some(prev) = self.paused_substeps.take() {
             sim.config.substeps = prev;
-        }
-    }
-
-    #[allow(dead_code)]
-    pub fn toggle(&mut self, sim: &mut Simulation) {
-        if self.is_paused() {
-            self.start(sim);
-        } else {
-            self.gui_state(sim);
         }
     }
 }
@@ -276,8 +266,15 @@ pub fn draw_config_panel(root_ui: &mut egui::Ui, sim: &mut Simulation, gui_state
                         gui_state.start(sim);
                     }
                 } else if ui.button("Pause").clicked() {
-                    gui_state.gui_state(sim);
+                    gui_state.pause(sim);
                 }
+                if ui.button("Dump").clicked()
+                    && let Err(e) = sim.dump_snapshot("snapshot.csv")
+                {
+                    eprintln!("dump failed: {e}");
+                }
+
+                ui.checkbox(&mut sim.config.debug, "jitter");
             });
 
             ui.separator();

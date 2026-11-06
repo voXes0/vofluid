@@ -5,7 +5,7 @@ edition = "2024"
 
 [features]
 default = ["parallel"]
-single = []
+single = ["dep:wide"]
 parallel = ["dep:rayon"]
 serialzation = ["dep:serde", "dep:ron"]
 all = ["single", "parallel", "serialzation"]
@@ -17,6 +17,7 @@ rand.workspace = true
 serde = { workspace = true, optional = true }
 ron = { workspace = true, optional = true }
 rayon = { workspace = true, optional = true }
+wide = { workspace = true, optional = true }
 
 [target.'cfg(target_arch = "wasm32")'.dependencies]
 getrandom = { workspace = true }

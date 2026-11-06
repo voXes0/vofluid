@@ -221,15 +221,12 @@ impl Epoch {
                 Kind::Counter => counters.push(snap),
             }
         }
-        spans.sort_by(|a, b| b.sum.cmp(&a.sum));
+        spans.sort_by_key(|a| std::cmp::Reverse(a.sum));
         counters.sort_by(|a, b| a.label.cmp(b.label));
         let mut fits: Vec<FitSnapshot> = self
             .fits
             .iter()
-            .map(|(label, sums)| FitSnapshot {
-                label: *label,
-                sums: *sums,
-            })
+            .map(|(label, sums)| FitSnapshot { label, sums: *sums })
             .collect();
         fits.sort_by(|a, b| a.label.cmp(b.label));
         let h = &self.hw;
@@ -462,7 +459,7 @@ impl InMemorySink {
                 }),
             }
         }
-        spans.sort_by(|a, b| b.0.cmp(&a.0));
+        spans.sort_by_key(|a| std::cmp::Reverse(a.0));
         counters.sort_by(|a, b| a.label.cmp(b.label));
 
         let hw = &epoch.hw;
@@ -485,7 +482,7 @@ impl InMemorySink {
             .iter()
             .filter_map(|(label, sums)| {
                 sums.line().map(|line| LiveFit {
-                    label: *label,
+                    label,
                     samples: sums.n,
                     intercept_ns: line.intercept,
                     slope_ns: line.slope,
@@ -560,7 +557,8 @@ impl Sink for InMemorySink {
     }
 
     fn count(&self, label: &'static str, value: u64) {
-        self.lock().add(label, Kind::Counter, 1, value, value, value);
+        self.lock()
+            .add(label, Kind::Counter, 1, value, value, value);
     }
 
     fn begin_epoch(&self, config: &SimConfig) {

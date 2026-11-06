@@ -364,6 +364,13 @@ impl StepGuard {
 }
 
 #[cfg(feature = "profile")]
+impl Default for StepGuard {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
+#[cfg(feature = "profile")]
 impl Drop for StepGuard {
     #[inline]
     fn drop(&mut self) {
@@ -515,7 +522,11 @@ mod tests {
         let (mut a, mut b, mut all) = (FitSums::default(), FitSums::default(), FitSums::default());
         for x in 0..20 {
             let y = 3.0 + 0.5 * x as f64;
-            if x % 2 == 0 { a.add(x as f64, y) } else { b.add(x as f64, y) }
+            if x % 2 == 0 {
+                a.add(x as f64, y)
+            } else {
+                b.add(x as f64, y)
+            }
             all.add(x as f64, y);
         }
         a.merge(&b);
